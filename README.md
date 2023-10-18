@@ -38,18 +38,61 @@ The message has a header to recognize the top of the dataset. The first byte is 
 | PH0 | 'U' |
 | PH1 | 'Z' |
 | PSZ | Payload Size |
-| CS0 | Checksum MSB |
-| CS1 | Checksum LSB |
+| CS0 | Checksum LSB |
+| CS1 | Checksum SB |
 | Dn  | Data Content |
 
 # Software structure
-## TX system
+## The TX software
 The TX system uses PWM0 of D06 pin of Spresense to output 40kHz carrier wave stably. The bit "0" or the start bit starts PWM0 for 1600 microseconds and the bit "1" or the stop bit stops PWM0 for 1600 microseconds.
+
+```
+void sendChar(const char c) {
+  // start bit
+  ioctl(fd, PWMIOC_START, 0);
+  delayMicroseconds(INTERVAL); // 0
+
+  for (int n = 0; n < 8; ++n) {
+    uint8_t bit = (c >> n) & 0x01;
+    if (bit == 1) {
+      // send bit 1
+      ioctl(fd, PWMIOC_STOP, 0);
+      delayMicroseconds(INTERVAL);       
+    } else if (bit == 0) {
+      // send bit 0
+      ioctl(fd, PWMIOC_START, 0);
+      delayMicroseconds(INTERVAL);  
+    } else {
+      MPLog("Fatal Error! %d\n", bit);
+    }
+  }
+
+  // end bit
+  ioctl(fd, PWMIOC_STOP, 0);
+  delayMicroseconds(INTERVAL*2);  // STOP_BITx2
+}
+```
+
 
 
 The checksum is calculated by exclusive OR using the message header and the data payload.
 
+```
+uint16_t calc_crc(char *msg_ptr, uint16_t data_length) {
+  uint16_t crc = 0x0000;
+  uint16_t header_length = HEADER_SIZE - CS_SIZE; // without checksum_data
+  char *data_ptr = msg_ptr + HEADER_SIZE;
+  for (uint16_t i = 0; i < header_length; i++) crc ^= *(msg_ptr++);
+  for (uint16_t i = 0; i < data_length;   i++) crc ^= *(data_ptr++);
+  return crc;
+}
+```
 
-## RX system.
+
+## The RX software.
 The RX system waits for the start bit by monitoring the GPIO pin like D20 for example. Once the monitored pin is falling the signal by the start bit, a hardware interrupt occurs, starting a timer interrupt of 1600 microseconds. 
+
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/assets/14106176/836f6b23-0046-41da-ae4a-4f870ec7f117" width="700" />
+
+
 
