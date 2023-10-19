@@ -37,16 +37,60 @@ The message has a header to recognize the top of the dataset. The first byte is 
 |--------|-------|
 | PH0 | 'U' |
 | PH1 | 'Z' |
-| PSZ | Payload Size |
+| PSZ | Content Size |
 | CS0 | Checksum LSB |
 | CS1 | Checksum SB |
-| Dn  | Data Content |
+| Dn  | Data Contents |
 
 # Software structure
 ## The TX software
-The TX system uses PWM0 of D06 pin of Spresense to output 40kHz carrier wave stably. The bit "0" or the start bit starts PWM0 for 1600 microseconds and the bit "1" or the stop bit stops PWM0 for 1600 microseconds.
+### setup
+In the setup function, initialize the payload and the pwm. The PWM0 of D06 pin of Spresense is used for output 40kHz carrier wave stably. 
+```
+void setup() {
+
+  /* setup message header */
+  message[PH0] = 'U';
+  message[PH1] = 'Z';
+  message[PSZ] = data_length;
+
+  /* set the payload data that starts from 'a' to 'z' */
+  char c = 'a';
+  for (int n = 0; n < data_length; ++n) {
+    message[n + HEADER_SIZE] = c++;
+  }
+
+  /* calc and set the checksum of the message */
+  uint16_t csum = calc_crc(&message[0], data_length);
+  message[CS0] = (uint8_t)(csum & 0x00ff);
+  message[CS1] = (uint8_t)((csum & 0xff00) >> 8);
+  printf("Checksum: 0x%04X\n", csum);
+  printf("Checksum: 0x%02X 0x%02X \n", message[CS1], message[CS0]);
+  /* Open the PWM device for reading */
+  fd = open(pwm_devpath, O_RDONLY);
+  if (fd < 0) {
+    printf("error: failed to open pwm0 device\n");
+    return;
+  }
+
+  /* Configure the characteristics of the pulse train */
+  info.frequency = frequency;
+  info.duty = duty;
+
+  ioctl(fd, PWMIOC_SETCHARACTERISTICS, (unsigned long)((uintptr_t)&info));
+}
+```
+### send the payload in the loop funtion
+The sendChar function disassembles the byte data to send the bit on the IR transmission. Please note that the bit "0" starts PWM0 for 1600 microseconds and the bit1 or the stop bit stops PWM0 for 1600 microseconds.
 
 ```
+void loop() {
+  for (char n = 0; n < msg_length; ++n) {
+    sendChar(message[n]);
+  }
+  sleep(1);
+}
+
 void sendChar(const char c) {
   // start bit
   ioctl(fd, PWMIOC_START, 0);
@@ -67,15 +111,14 @@ void sendChar(const char c) {
     }
   }
 
-  // end bit
+  // stop bit
   ioctl(fd, PWMIOC_STOP, 0);
   delayMicroseconds(INTERVAL*2);  // STOP_BITx2
 }
 ```
 
-
-
-The checksum is calculated by exclusive OR using the message header and the data payload.
+### checksum function
+The checksum is calculated by exclusive OR using the message header and the data contents.
 
 ```
 uint16_t calc_crc(char *msg_ptr, uint16_t data_length) {
@@ -94,5 +137,112 @@ The RX system waits for the start bit by monitoring the GPIO pin like D20 for ex
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/assets/14106176/836f6b23-0046-41da-ae4a-4f870ec7f117" width="700" />
 
+### setup
+In the setup function, the hardware interrupt is set to detect falling the voltage. For the interrupt handling, there has been a problem just after the power-on. The expectation is that the interrupt should be just after dropping the voltage, but the problem is that the interrupt is delayed just after the power-on. So, I put the  countermeasure in "waiting_for_start_bit" that is the interrupt routine. In the interrupt routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit detected.
+
+```
+/* Hardware interrupt */
+bool bPowerOn = true;
+void waiting_for_start_bit() {
+  // Note: it takes 800msec from voltage falling to firing software interrupt
+  detachInterrupt(RECV_PIN); /* detach the hardware interrupt */
+  uint32_t interval;
+  if (bPowerOn) {  // the counter measure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
+    interval = FETCH_INTERVAL;
+    bPowerOn = false;
+  } else {
+    interval = FETCH_INTERVAL*1.5-100;  // 100 microseconds is the processing time for detachInterrupt and attachTimerInterrupt
+  }
+  attachTimerInterrupt(read_recv_pin, interval);  /* switch to the timer interrupt */   
+}
+
+/* Timer interrupt */
+bool bFetch = false;
+unsigned int  read_recv_pin() {
+  bFetch = true;
+  return FETCH_INTERVAL;
+}
 
 
+void setup() {
+  pinMode(RECV_PIN, INPUT_PULLUP);
+  attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
+}
+```
+
+### loop and decode the bits
+
+
+```
+void loop() {
+  static bool bPinSetting = false;
+  static int bit_counter = 0;
+  static int data_counter = 0;
+  static int byte_value = 0;
+  static int last_byte_value = 0;
+
+  if (bFetch) {
+    bFetch = false;
+
+    if (!bPinSetting) pinMode(RECV_PIN, INPUT_PULLUP);
+    bit_array[bit_counter++] = digitalRead(RECV_PIN);
+
+    /* all bit are stored in the bit array */
+    if (bit_counter == 9) {
+
+      /* check the stop bit */
+      if (bit_array[8] != 1) {
+        // to do: error handling       
+      } else {
+        /* construct byte data */
+        byte_value = 0;
+        for (int n = 0; n < 8; ++n) {
+          byte_value |= bit_array[n] << n;
+        }
+
+        /* store the data to byte_array */
+        byte_array[data_counter++] = byte_value;
+
+        /* waiting for the next header */
+        if (data_counter > 2 && byte_array[data_counter-2] == 'U' &&  byte_array[data_counter-1] == 'Z') {
+    
+          /* check if the last bytes have already been stored */
+          if (data_counter > HEADER_SIZE && byte_array[PH0] == 'U' && byte_array[PH1] == 'Z') {
+
+            /* get the payload size */
+            uint16_t length = byte_array[PSZ];
+
+            /* get the checksum data */
+            uint16_t csum = (byte_array[CS1] << 8) | byte_array[CS0];
+
+            /* check the data with the sachecksum */
+            uint16_t bcc = calc_crc(&byte_array[0], length);
+            if (bcc == csum) {
+              for (int n = 0; n < length; ++n) {
+                output_data[n] = byte_array[n + HEADER_SIZE];
+              }
+
+              // output the data
+              printf("%s\n", &output_data[0]);
+
+            } 
+
+            /* the message has been processed. clear the buffer */
+            data_counter = 0;
+            memset(byte_array, 0, BYTE_BUFF_SIZE); 
+
+            /* restore the current header */
+            byte_array[data_counter++] = last_byte_value; // 'U'
+            byte_array[data_counter++] = byte_value;  // 'Z'
+          }
+        }
+        last_byte_value = byte_value;
+      } 
+      bit_counter = 0;
+      bPinSetting = false;
+      detachTimerInterrupt();
+      attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
+    }
+  }
+}
+```
