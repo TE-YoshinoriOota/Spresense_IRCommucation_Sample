@@ -44,7 +44,7 @@ The message has a header to recognize the top of the dataset. The first byte is 
 
 # Software structure
 ## The TX software
-### setup
+### ■ setup payload and PWM function
 In the setup function, initialize the payload and the pwm. The PWM0 of D06 pin of Spresense is used for output 40kHz carrier wave stably. 
 ```
 void setup() {
@@ -80,7 +80,7 @@ void setup() {
   ioctl(fd, PWMIOC_SETCHARACTERISTICS, (unsigned long)((uintptr_t)&info));
 }
 ```
-### send the payload in the loop funtion
+### ■ send the payload in the loop function
 The sendChar function disassembles the byte data to send the bit on the IR transmission. Please note that the bit "0" starts PWM0 for 1600 microseconds and the bit1 or the stop bit stops PWM0 for 1600 microseconds.
 
 ```
@@ -117,7 +117,7 @@ void sendChar(const char c) {
 }
 ```
 
-### checksum function
+### ■ checksum function
 The checksum is calculated by exclusive OR using the message header and the data contents.
 
 ```
@@ -137,7 +137,7 @@ The RX system waits for the start bit by monitoring the GPIO pin like D20 for ex
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/assets/14106176/836f6b23-0046-41da-ae4a-4f870ec7f117" width="700" />
 
-### setup
+### ■ setup interrupt handlers
 In the setup function, the hardware interrupt is set to detect falling the voltage. For the interrupt handling, there has been a problem just after the power-on. The expectation is that the interrupt should be just after dropping the voltage, but the problem is that the interrupt is delayed just after the power-on. So, I put the  countermeasure in "waiting_for_start_bit" that is the interrupt routine. In the interrupt routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit detected.
 
 ```
@@ -169,7 +169,7 @@ void setup() {
 }
 ```
 
-### loop and decode the bits
+### ■ decode bit data to byte data
 In the loop function, store each bit and convert it into byte data. When "bFetch" turns into "true", read a bit of data from RECV_PIN and store the value in "bit_array". When the stop bit is detected, the bit data compiles to byte data. Then, the byte data is stored in "byte_array". All byte data has been read that is specified by "PSZ", then the data is copied to "output_data".
 
 ```
