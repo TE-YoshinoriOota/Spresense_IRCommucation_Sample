@@ -141,13 +141,20 @@ The RX system waits for the start bit by monitoring the GPIO pin like D20 for ex
 In the setup function, the hardware interrupt is set to detect falling the voltage. For the interrupt handling, there has been a problem just after the power-on. The expectation is that the interrupt should be just after dropping the voltage, but the problem is that the interrupt is delayed just after the power-on. So, I put the  countermeasure in "waiting_for_start_bit" that is the interrupt routine. In the interrupt routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit detected.
 
 ```
-/* Hardware interrupt */
+/* Timer interrupt Handler */
+bool bFetch = false;
+unsigned int  read_recv_pin() {
+  bFetch = true;
+  return FETCH_INTERVAL;
+}
+
+/* Hardware interrupt Handler */
 bool bPowerOn = true;
 void waiting_for_start_bit() {
   // Note: it takes 800msec from voltage falling to firing software interrupt
   detachInterrupt(RECV_PIN); /* detach the hardware interrupt */
   uint32_t interval;
-  if (bPowerOn) {  // the counter measure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
+  if (bPowerOn) {  // the countermeasure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
     interval = FETCH_INTERVAL;
     bPowerOn = false;
   } else {
@@ -156,14 +163,6 @@ void waiting_for_start_bit() {
   attachTimerInterrupt(read_recv_pin, interval);  /* switch to the timer interrupt */   
 }
 
-/* Timer interrupt */
-bool bFetch = false;
-unsigned int  read_recv_pin() {
-  bFetch = true;
-  return FETCH_INTERVAL;
-}
-
-
 void setup() {
   pinMode(RECV_PIN, INPUT_PULLUP);
   attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
@@ -171,15 +170,18 @@ void setup() {
 ```
 
 ### loop and decode the bits
-
+In the loop function, store each bit and convert it into byte data. When "bFetch" turns into "true", read a bit of data from RECV_PIN and store the value in "bit_array". When the stop bit is detected, the bit data compiles to byte data. Then, the byte data is stored in "byte_array". All byte data has been read that is specified by "PSZ", then the data is copied to "output_data".
 
 ```
 void loop() {
   static bool bPinSetting = false;
   static int bit_counter = 0;
   static int data_counter = 0;
-  static int byte_value = 0;
   static int last_byte_value = 0;
+
+  static char bit_array[BIT_BUFF_SIZE] = {0};
+  static char byte_array[BYTE_BUFF_SIZE] = {0};
+  static char output_data[BYTE_BUFF_SIZE] = {0};
 
   if (bFetch) {
     bFetch = false;
@@ -191,11 +193,9 @@ void loop() {
     if (bit_counter == 9) {
 
       /* check the stop bit */
-      if (bit_array[8] != 1) {
-        // to do: error handling       
-      } else {
+      if (bit_array[8] == 1) {
         /* construct byte data */
-        byte_value = 0;
+        int byte_value = 0;
         for (int n = 0; n < 8; ++n) {
           byte_value |= bit_array[n] << n;
         }
@@ -222,7 +222,8 @@ void loop() {
                 output_data[n] = byte_array[n + HEADER_SIZE];
               }
 
-              // output the data
+              // put a user function here to pass the decoded data to a user application.
+              // put just the "print out" function here for the tentative
               printf("%s\n", &output_data[0]);
 
             } 
@@ -237,11 +238,13 @@ void loop() {
           }
         }
         last_byte_value = byte_value;
+      } else {
+        /* stop bit (bit_array[8]) is not 1. need an error handling. */
       } 
       bit_counter = 0;
       bPinSetting = false;
-      detachTimerInterrupt();
-      attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
+      detachTimerInterrupt(); 
+      attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING); // switch the hardware interrupt to wait the start bit.
     }
   }
 }
