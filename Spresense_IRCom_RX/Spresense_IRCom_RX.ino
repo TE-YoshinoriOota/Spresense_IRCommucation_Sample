@@ -14,13 +14,17 @@
 #define CS_SIZE (2)
 #define HEADER_SIZE (CS1+1)
 
-uint8_t start_counter = 0;
-uint32_t start_ms = 0;
-
 const bool interrupt_debug = false;
 
+/* Timer interrupt handler */
+bool bFetch = false;
+unsigned int  read_recv_pin() {
+  bFetch = true;
+  return FETCH_INTERVAL;
+}
+
+/* Hardware interrupt handler */
 bool bPowerOn = true;
-bool bTriggerFired = false;
 void waiting_for_start_bit() {
   // Note: it takes 800msec from voltage falling to firing software interrupt
   if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
@@ -36,27 +40,11 @@ void waiting_for_start_bit() {
   if (interrupt_debug) digitalWrite(MONITOR_PIN, LOW);
 }
 
-bool bDataStored = false;
 
-char bit_array[BIT_BUFF_SIZE] = {0};
-char byte_array[BYTE_BUFF_SIZE] = {0};
-char output_data[BYTE_BUFF_SIZE] = {0};
-
-
-bool bFinished = false;
-bool bFetch = false;
-bool bTimerEnd = false;
-unsigned int  read_recv_pin() {
-  bFetch = true;
-  return FETCH_INTERVAL;
-}
-
-const int subcore = 1;
 void setup() {
   pinMode(RECV_PIN, INPUT_PULLUP);
   if (interrupt_debug) pinMode(MONITOR_PIN, OUTPUT);
   attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
-  // start_ms = millis();
 }
 
 
@@ -65,13 +53,17 @@ void loop() {
   static bool bPinSetting = false;
   static int bit_counter = 0;
   static int data_counter = 0;
-  static int byte_value = 0;
   static int last_byte_value = 0;
 
+  static char bit_array[BIT_BUFF_SIZE] = {0};
+  static char byte_array[BYTE_BUFF_SIZE] = {0};
+  static char output_data[BYTE_BUFF_SIZE] = {0};
+
   if (bFetch) {
+    bFetch = false;
+
     if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
     if (!bPinSetting) pinMode(RECV_PIN, INPUT_PULLUP);
-    bFetch = false;
 
     bit_array[bit_counter++] = digitalRead(RECV_PIN);
 
@@ -79,14 +71,9 @@ void loop() {
     if (bit_counter == 9) {
 
       /* check the stop bit */
-      if (bit_array[8] != 1) {
-        /* detecting a stop bit error */
-        // to do: error handling
-        printf("stop bit error\n");
-        
-      } else {
+      if (bit_array[8] == 1) {
         /* construct byte data */
-        byte_value = 0;
+        int byte_value = 0;
         for (int n = 0; n < 8; ++n) {
           byte_value |= bit_array[n] << n;
         }
@@ -136,15 +123,16 @@ void loop() {
             byte_array[data_counter++] = last_byte_value; // 'U'
             byte_array[data_counter++] = byte_value;  // 'Z'
           }
-
         }
         last_byte_value = byte_value;
+      } else {
+        /* stop bit (bit_array[8]) is not 1. need an error handling. */
+        printf("stop bit error\n");
       } 
       bit_counter = 0;
-      bTimerEnd = true;
       bPinSetting = false;
       detachTimerInterrupt();
-      attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
+      attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING); // switch the hardware interrupt to wait the start bit.
     }
     digitalWrite(MONITOR_PIN, LOW);
   }
