@@ -3,7 +3,7 @@ This is a sample IR communication program for the Sony Spresense Board.
 
 # The electrical characteristics
 ## TX Signal
-This protocol is based on UART. A data bit is expressed by IR blinking on a 40 kHz carrier wave. Please note that sending the IR carrier wave is "0" and the non-active is "1". 
+This protocol is based on UART. A data bit is expressed by IR blinking on a 40 kHz carrier wave. From the RX system point of view, the signal on the IR carrier wave is "0" and the non-active is "1". 
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide0.PNG" width="700" />
 
@@ -12,25 +12,25 @@ The TX system may use any IR LED, but you could refer to [a datasheet of the IR 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide1.PNG" width="700" />
 
 ## RX Signal
-The IR diode can only receive IR blinking on a carrier wave. The below figure shows the relationship between the TX wave coming from the TX system and the output signal of the IR diode. You can choose the frequency though, I decided on an IR diode having 40 kHz sensitivity. 
+The IR diode for the RX system can only receive IR blinking on the carrier wave. The below figure shows the output signal of the RX system. As you can see, receiving the carrier wave is "0" and no-signal is "1". You can choose any frequency of the carrier wave though, it depends on the IR diode characteristics. I decided to use an IR diode having 40 kHz sensitivity. 
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide2.PNG" width="700" />
 
-The R system may use any IR diode, but you could refer to [a datasheet of the IR diode made by Vishay Semiconductors](https://www.vishay.com/docs/82459/tsop48.pdf) The example circuit is shown below for a reference.
+You could refer to [a datasheet of the IR diode made by Vishay Semiconductors](https://www.vishay.com/docs/82459/tsop48.pdf) for a good IR diode device. The example circuit is shown below for a reference.
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide3.PNG" width="700" />
 
 
 # Protocol
 ## Sending a byte
-The protocol is based on UART 8N1. The start bit is 0 and the stop bit is 1. The byte data consists of 8 bits. The bit length of the signal is 1600 (TBD) microseconds.
+The protocol is based on UART 8N1. The start bit is "0" and the stop bit is "1". The byte data consists of 8 bits. The bit length of the signal is 1600 (TBD) microseconds.
 
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide4.PNG" width="700" />
 
 ## Payload structure
-The message has a header to recognize the top of the dataset. The first byte is 'U' and the second byte is 'Z'. The third byte is the length of the data payload. The fourth and fifth bytes consist of the checksum of the message without the checksum value.
+The message has a header to recognize the top of the dataset. The first byte is 'U' and the second byte is 'Z'. The third byte is the length of the data payload. The fourth and fifth bytes consist of the checksum of the message without the checksum value itself.
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide5.PNG" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide6.PNG" width="700" />
 
 
 | Symbol | Value |
@@ -39,13 +39,13 @@ The message has a header to recognize the top of the dataset. The first byte is 
 | PH1 | 'Z' |
 | PSZ | Content Size |
 | CS0 | Checksum LSB |
-| CS1 | Checksum SB |
+| CS1 | Checksum MSB |
 | Dn  | Data Contents |
 
 # Software structure
 ## The TX software
 ### ■ setup payload and PWM function
-In the setup function, initialize the payload and the pwm. The PWM0 of D06 pin of Spresense is used for output 40kHz carrier wave stably. 
+In the setup function, set up the payload and initialize the PWM system. The PWM0 of D06 pin on Spresense Extension Board can be used for output 40kHz carrier wave stably. 
 ```
 void setup() {
 
@@ -81,7 +81,7 @@ void setup() {
 }
 ```
 ### ■ send the payload in the loop function
-The sendChar function disassembles the byte data to send the bit on the IR transmission. Please note that the bit "0" starts PWM0 for 1600 microseconds and the bit1 or the stop bit stops PWM0 for 1600 microseconds.
+The sendChar function disassembles the byte data to send a bit on the IR transmission. For sending the bit "0",  the PWM0 runs for 1600 microseconds, for sending the bit "1" the PWM0 stops for 1600 microseconds.
 
 ```
 void loop() {
@@ -133,12 +133,12 @@ uint16_t calc_crc(char *msg_ptr, uint16_t data_length) {
 
 
 ## The RX software.
-The RX system waits for the start bit by monitoring the GPIO pin like D20 for example. Once the monitored pin is falling the signal by the start bit, a hardware interrupt occurs, starting a timer interrupt of 1600 microseconds. 
+The RX system waits for the start bit by monitoring the GPIO pin like D20 for example. Once the monitored pin is falling the signal by a start bit, the hardware interrupt fires for starting the timer interrupt with 1600 microseconds. 
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide6.PNG" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide5.PNG" width="700" />
 
 ### ■ setup interrupt handlers
-In the setup function, the hardware interrupt is set to detect falling the voltage. For the interrupt handling, there has been a problem just after the power-on. The expectation is that the interrupt should be just after dropping the voltage, but the problem is that the interrupt is delayed just after the power-on. So, I put the  countermeasure in "waiting_for_start_bit" that is the interrupt routine. In the interrupt routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit detected.
+In the setup function, the hardware interrupt is set to detect a start bit. There is a problem just after the power-on so far. The expectation is that the interrupt should be just after dropping the voltage, but the interrupt is delayed for 800 microseconds just after the power-on. So, I put the  countermeasure in the interrupt routine of "waiting_for_start_bit". The "bPowerOn" flag is the countermeasure. In the "waiting_for_start_bit" routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit is detected.
 
 ```
 /* Timer interrupt Handler */
@@ -170,7 +170,7 @@ void setup() {
 ```
 
 ### ■ decode bit data to byte data
-In the loop function, store each bit and convert it into byte data. When "bFetch" turns into "true", read a bit of data from RECV_PIN and store the value in "bit_array". When the stop bit is detected, the bit data compiles to byte data. Then, the byte data is stored in "byte_array". All byte data has been read that is specified by "PSZ", then the data is copied to "output_data".
+In the loop function, store each bit and convert it into byte data. When the "bFetch" turns into "true", read the value of the RECV_PIN and store it in the "bit_array". When the stop bit is detected, the bit data compiles to the byte data and it is stored in the "byte_array". After all bytes of the data have been read that is specified by "PSZ", the data is copied to the "output_data" array.
 
 ```
 void loop() {
