@@ -93,7 +93,7 @@ void loop() {
     
           /* check if the last bytes have already been stored */
           if (data_counter > HEADER_SIZE && byte_array[PH0] == 'U' && byte_array[PH1] == 'Z') {
-            delayMicroseconds(10); // countermeasure: timing adjustment
+            delayMicroseconds(100); // countermeasure: timing adjustment
 
             /* get the payload size */
             uint16_t length = byte_array[PSZ];
