@@ -5,32 +5,32 @@ This is a sample IR communication program for the Sony Spresense Board.
 ## TX Signal
 This protocol is based on UART. A data bit is expressed by IR blinking on a 40 kHz carrier wave. Please note that sending the IR carrier wave is "0" and the non-active is "1". 
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide0.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide0.PNG" width="700" />
 
 The TX system may use any IR LED, but you could refer to [a datasheet of the IR LED made by Vishay Semiconductors](https://www.vishay.com/docs/81011/tsal6400.pdf). The example circuit is shown below for a reference. 
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide1.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide1.PNG" width="700" />
 
 ## RX Signal
 The IR diode can only receive IR blinking on a carrier wave. The below figure shows the relationship between the TX wave coming from the TX system and the output signal of the IR diode. You can choose the frequency though, I decided on an IR diode having 40 kHz sensitivity. 
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide2.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide2.PNG" width="700" />
 
 The R system may use any IR diode, but you could refer to [a datasheet of the IR diode made by Vishay Semiconductors](https://www.vishay.com/docs/82459/tsop48.pdf) The example circuit is shown below for a reference.
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide3.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide3.PNG" width="700" />
 
 
 # Protocol
 ## Sending a byte
 The protocol is based on UART 8N1. The start bit is 0 and the stop bit is 1. The byte data consists of 8 bits. The bit length of the signal is 1600 (TBD) microseconds.
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide4.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide4.PNG" width="700" />
 
 ## Payload structure
 The message has a header to recognize the top of the dataset. The first byte is 'U' and the second byte is 'Z'. The third byte is the length of the data payload. The fourth and fifth bytes consist of the checksum of the message without the checksum value.
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide5.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide5.PNG" width="700" />
 
 
 | Symbol | Value |
@@ -135,7 +135,7 @@ uint16_t calc_crc(char *msg_ptr, uint16_t data_length) {
 ## The RX software.
 The RX system waits for the start bit by monitoring the GPIO pin like D20 for example. Once the monitored pin is falling the signal by the start bit, a hardware interrupt occurs, starting a timer interrupt of 1600 microseconds. 
 
-<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/resouces/slide6.png" width="700" />
+<img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide6.PNG" width="700" />
 
 ### ■ setup interrupt handlers
 In the setup function, the hardware interrupt is set to detect falling the voltage. For the interrupt handling, there has been a problem just after the power-on. The expectation is that the interrupt should be just after dropping the voltage, but the problem is that the interrupt is delayed just after the power-on. So, I put the  countermeasure in "waiting_for_start_bit" that is the interrupt routine. In the interrupt routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit detected.
