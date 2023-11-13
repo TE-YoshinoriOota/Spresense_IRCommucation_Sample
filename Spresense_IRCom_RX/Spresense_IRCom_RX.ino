@@ -24,20 +24,9 @@ unsigned int  read_recv_pin() {
 }
 
 /* Hardware interrupt handler */
-bool bPowerOn = true;
+bool bStartBit = false;
 void waiting_for_start_bit() {
-  // Note: it takes 800msec from voltage falling to firing software interrupt
-  if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
-  detachInterrupt(RECV_PIN);
-  uint32_t interval;
-  if (bPowerOn) {  // the counter measure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
-    interval = FETCH_INTERVAL;
-    bPowerOn = false;
-  } else {
-    interval = FETCH_INTERVAL*1.5-100;  // 100 microseconds is the processing time for detachInterrupt and attachTimerInterrupt
-  }
-  attachTimerInterrupt(read_recv_pin, interval);      
-  if (interrupt_debug) digitalWrite(MONITOR_PIN, LOW);
+  bStartBit = true;
 }
 
 
@@ -53,12 +42,31 @@ void loop() {
   static bool bPinSetting = false;
   static int bit_counter = 0;
   static int data_counter = 0;
-  static int last_byte_value = 0;
 
   static char bit_array[BIT_BUFF_SIZE] = {0};
   static char byte_array[BYTE_BUFF_SIZE] = {0};
   static char output_data[BYTE_BUFF_SIZE] = {0};
+  
+  // Hardware Interrupt Handling (StartBit detection)
+  if (bStartBit) {
+    if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
+    detachInterrupt(RECV_PIN);
 
+    uint32_t interval;
+    static bool bPowerOn = true; // the counter measure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
+    if (bPowerOn) {  
+      interval = FETCH_INTERVAL;
+      bPowerOn = false;
+    } else {
+      interval = FETCH_INTERVAL*1.5-100;  // 100 microseconds is the processing time for detachInterrupt and attachTimerInterrupt
+    }
+    attachTimerInterrupt(read_recv_pin, interval);      
+    if (interrupt_debug) digitalWrite(MONITOR_PIN, LOW);   
+    bStartBit = false;
+    return;
+  }
+
+  // Timer Interrupt Handling (To fetch bits)
   if (bFetch) {
     bFetch = false;
 
@@ -77,7 +85,7 @@ void loop() {
         for (int n = 0; n < 8; ++n) {
           byte_value |= bit_array[n] << n;
         }
-        //printf("0x%02X\n", byte_value);
+        // printf("[%d] %c\n", data_counter, byte_value);
 
         /* store the data to byte_array */
         byte_array[data_counter++] = byte_value;
@@ -89,48 +97,56 @@ void loop() {
         }
 
         /* waiting for the next header */
-        if (data_counter > 2 && byte_array[data_counter-2] == 'U' &&  byte_array[data_counter-1] == 'Z') {
-    
-          /* check if the last bytes have already been stored */
-          if (data_counter > HEADER_SIZE && byte_array[PH0] == 'U' && byte_array[PH1] == 'Z') {
-            delayMicroseconds(100); // countermeasure: timing adjustment
+        static char *header = NULL;
+        static bool bByteRecording = false;
+        if (data_counter > PH1 && byte_array[data_counter-2] == 'U' &&  byte_array[data_counter-1] == 'Z') {
+          header = &byte_array[data_counter-2];
+          bByteRecording = true;
+        }
+
+        static int packet_counter = 2; // 'U','Z'
+        if (bByteRecording) {
+          ++packet_counter;
+          if (packet_counter > HEADER_SIZE) {
 
             /* get the payload size */
-            uint16_t length = byte_array[PSZ];
+            uint16_t length = header[PSZ];
 
-            /* get the checksum data */
-            uint16_t csum = (byte_array[CS1] << 8) | byte_array[CS0];
+            if (packet_counter > HEADER_SIZE + length) {
 
-            /* check the data with the sachecksum */
-            uint16_t bcc = calc_crc(&byte_array[0], length);
-            if (bcc == csum) {
-              for (int n = 0; n < length; ++n) {
-                output_data[n] = byte_array[n + HEADER_SIZE];
+              /* get the checksum data */
+              uint16_t csum = (header[CS1] << 8) | header[CS0];
+              /* check the data with the sachecksum */
+              uint16_t bcc = calc_crc(&header[PH0], length);
+              if (bcc == csum) {
+
+                for (int i = 0; i < length; ++i) {
+                  output_data[i] = header[HEADER_SIZE + i];
+                }
+
+                // output the data
+                printf("%s\n", &output_data[0]);
+
+              } else {
+                // to do: error handling
+                printf("Checksum Error: 0x%04X 0x%04X\n",  bcc, csum);
               }
 
-              // output the data
-              printf("%s\n", &output_data[0]);
-
-            } else {
-              // to do: error handling
-              printf("Checksum Error: 0x%04X 0x%04X\n",  bcc, csum);
+              /* the message has been processed. clear the buffer */
+              data_counter = 0;
+              packet_counter = 2;
+              header = NULL;
+              bByteRecording = false;
+              memset(byte_array, 0, BYTE_BUFF_SIZE); 
             }
-
-            /* the message has been processed. clear the buffer */
-            data_counter = 0;
-            memset(byte_array, 0, BYTE_BUFF_SIZE); 
-
-            /* restore the current header */
-            byte_array[data_counter++] = last_byte_value; // 'U'
-            byte_array[data_counter++] = byte_value;  // 'Z'
           }
         }
-        last_byte_value = byte_value;
       } else {
         /* stop bit (bit_array[8]) is not 1. need an error handling. */
         printf("stop bit error\n");
       } 
       bit_counter = 0;
+      memset(bit_array, 0, BIT_BUFF_SIZE);
       bPinSetting = false;
       detachTimerInterrupt();
       attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING); // switch the hardware interrupt to wait the start bit.
