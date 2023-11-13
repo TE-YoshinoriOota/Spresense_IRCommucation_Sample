@@ -138,55 +138,71 @@ The RX system waits for the start bit by monitoring the GPIO pin like D20 for ex
 <img src="https://github.com/TE-YoshinoriOota/Spresense_IRCommucation_Sample/blob/main/resources/slide5.PNG" width="700" />
 
 ### ■ setup interrupt handlers
-In the setup function, the hardware interrupt is set to detect a start bit. There is a problem just after the power-on so far. The expectation is that the interrupt should be just after dropping the voltage, but the interrupt is delayed for 800 microseconds just after the power-on. So, I put the  countermeasure in the interrupt routine of "waiting_for_start_bit". The "bPowerOn" flag is the countermeasure. In the "waiting_for_start_bit" routine, the hardware interrupt is detached and switched to the timer interrupt to fetch the bits after the start bit is detected.
+In the setup function, the hardware interrupt is set to detect a start bit. The interrupt handler is "waiting_for_sart_bit" which is turning on the bStartBit. When the bStartBit turns true, the timer interrupt starts to fetch each bit of the 8N1. The timer interrupt handler is read_recv_pin which is turning on the bFetch.
 
 ```
-/* Timer interrupt Handler */
+/* Timer interrupt handler */
 bool bFetch = false;
 unsigned int  read_recv_pin() {
   bFetch = true;
   return FETCH_INTERVAL;
 }
 
-/* Hardware interrupt Handler */
-bool bPowerOn = true;
+/* Hardware interrupt handler */
+bool bStartBit = false;
 void waiting_for_start_bit() {
-  // Note: it takes 800msec from voltage falling to firing software interrupt
-  detachInterrupt(RECV_PIN); /* detach the hardware interrupt */
-  uint32_t interval;
-  if (bPowerOn) {  // the countermeasure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
-    interval = FETCH_INTERVAL;
-    bPowerOn = false;
-  } else {
-    interval = FETCH_INTERVAL*1.5-100;  // 100 microseconds is the processing time for detachInterrupt and attachTimerInterrupt
-  }
-  attachTimerInterrupt(read_recv_pin, interval);  /* switch to the timer interrupt */   
+  bStartBit = true;
 }
 
 void setup() {
   pinMode(RECV_PIN, INPUT_PULLUP);
+  if (interrupt_debug) pinMode(MONITOR_PIN, OUTPUT);
   attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING);
 }
 ```
 
 ### ■ decode bit data to byte data
-In the loop function, store each bit and convert it into byte data. When the "bFetch" turns into "true", read the value of the RECV_PIN and store it in the "bit_array". When the stop bit is detected, the bit data compiles to the byte data and it is stored in the "byte_array". After all bytes of the data have been read that is specified by "PSZ", the data is copied to the "output_data" array.
+In the loop function, store each bit and convert it into byte data. When the "bStartBit" turns into "true", set the timer interrupt to fetch each bit. However, there is a problem just after the system bootup. The expectation is that the interrupt should be just after dropping the voltage, but the interrupt is delayed for 800 microseconds just after the power-on. So, I put the bPowerOn flag as the countermeasure for the problem.  Please look into the code for the detail
+
+When the "bFetch" turns into "true" by the timer interrupt, read the value of the RECV_PIN and store it in the "bit_array". When the stop bit is detected, the bit data compiles to the byte data and it is stored in the "byte_array". After all bytes of the data have been read that is specified by the content length of "PSZ", the data is copied to the "output_data" array.
 
 ```
 void loop() {
+
   static bool bPinSetting = false;
   static int bit_counter = 0;
   static int data_counter = 0;
-  static int last_byte_value = 0;
 
   static char bit_array[BIT_BUFF_SIZE] = {0};
   static char byte_array[BYTE_BUFF_SIZE] = {0};
   static char output_data[BYTE_BUFF_SIZE] = {0};
+  
+  // Hardware Interrupt Handling (StartBit detection)
+  if (bStartBit) {
+    if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
+    detachInterrupt(RECV_PIN);
 
+    uint32_t interval;
+    static bool bPowerOn = true; // the countermeasure for changing the interrupt timing. I don't know why but the first interrupt takes 800usec. 
+    if (bPowerOn) {  
+      interval = FETCH_INTERVAL;
+      bPowerOn = false;
+    } else {
+      interval = FETCH_INTERVAL*1.5-100;  // 100 microseconds is the processing time for detachInterrupt and attachTimerInterrupt
+    }
+    attachTimerInterrupt(read_recv_pin, interval);      
+    if (interrupt_debug) digitalWrite(MONITOR_PIN, LOW);   
+    bStartBit = false;
+    return;
+  }
+
+  // Timer Interrupt Handling (To fetch bits)
   if (bFetch) {
     bFetch = false;
 
+    if (interrupt_debug) digitalWrite(MONITOR_PIN, HIGH);
     if (!bPinSetting) pinMode(RECV_PIN, INPUT_PULLUP);
+
     bit_array[bit_counter++] = digitalRead(RECV_PIN);
 
     /* all bit are stored in the bit array */
@@ -199,53 +215,73 @@ void loop() {
         for (int n = 0; n < 8; ++n) {
           byte_value |= bit_array[n] << n;
         }
+        // printf("[%d] %c\n", data_counter, byte_value);
 
         /* store the data to byte_array */
         byte_array[data_counter++] = byte_value;
 
+        // the below condition may not reach but put this for a fail-safe.
+        if (data_counter >= BYTE_BUFF_SIZE) {
+          printf("byte_array overflow\n");
+          data_counter = 0; 
+        }
+
         /* waiting for the next header */
-        if (data_counter > 2 && byte_array[data_counter-2] == 'U' &&  byte_array[data_counter-1] == 'Z') {
-    
-          /* check if the last bytes have already been stored */
-          if (data_counter > HEADER_SIZE && byte_array[PH0] == 'U' && byte_array[PH1] == 'Z') {
+        static char *header = NULL;
+        static bool bByteRecording = false;
+        if (data_counter > PH1 && byte_array[data_counter-2] == 'U' &&  byte_array[data_counter-1] == 'Z') {
+          header = &byte_array[data_counter-2];
+          bByteRecording = true;
+        }
+
+        static int packet_counter = 2; // 'U','Z'
+        if (bByteRecording) {
+          ++packet_counter;
+          if (packet_counter > HEADER_SIZE) {
 
             /* get the payload size */
-            uint16_t length = byte_array[PSZ];
+            uint16_t length = header[PSZ];
 
-            /* get the checksum data */
-            uint16_t csum = (byte_array[CS1] << 8) | byte_array[CS0];
+            if (packet_counter > HEADER_SIZE + length) {
 
-            /* check the data with the sachecksum */
-            uint16_t bcc = calc_crc(&byte_array[0], length);
-            if (bcc == csum) {
-              for (int n = 0; n < length; ++n) {
-                output_data[n] = byte_array[n + HEADER_SIZE];
+              /* get the checksum data */
+              uint16_t csum = (header[CS1] << 8) | header[CS0];
+              /* check the data with the checksum */
+              uint16_t bcc = calc_crc(&header[PH0], length);
+              if (bcc == csum) {
+
+                for (int i = 0; i < length; ++i) {
+                  output_data[i] = header[HEADER_SIZE + i];
+                }
+
+                // output the data
+                printf("%s\n", &output_data[0]);
+
+              } else {
+                // to do: error handling
+                printf("Checksum Error: 0x%04X 0x%04X\n",  bcc, csum);
               }
 
-              // put a user function here to pass the decoded data to a user application.
-              // put just the "print out" function here for the tentative
-              printf("%s\n", &output_data[0]);
-
-            } 
-
-            /* the message has been processed. clear the buffer */
-            data_counter = 0;
-            memset(byte_array, 0, BYTE_BUFF_SIZE); 
-
-            /* restore the current header */
-            byte_array[data_counter++] = last_byte_value; // 'U'
-            byte_array[data_counter++] = byte_value;  // 'Z'
+              /* the message has been processed. clear the buffer */
+              data_counter = 0;
+              packet_counter = 2;
+              header = NULL;
+              bByteRecording = false;
+              memset(byte_array, 0, BYTE_BUFF_SIZE); 
+            }
           }
         }
-        last_byte_value = byte_value;
       } else {
         /* stop bit (bit_array[8]) is not 1. need an error handling. */
+        printf("stop bit error\n");
       } 
       bit_counter = 0;
+      memset(bit_array, 0, BIT_BUFF_SIZE);
       bPinSetting = false;
-      detachTimerInterrupt(); 
+      detachTimerInterrupt();
       attachInterrupt(RECV_PIN, waiting_for_start_bit, FALLING); // switch the hardware interrupt to wait the start bit.
     }
+    digitalWrite(MONITOR_PIN, LOW);
   }
 }
 ```
